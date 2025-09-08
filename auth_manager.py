@@ -222,10 +222,11 @@ class AuthManager:
                 'session_id': self.get_session_id()
             }
 
-def init_auth() -> AuthManager:
+def init_auth(db_manager: DatabaseManager = None) -> AuthManager:
     """Initialize authentication manager"""
     if 'auth_manager' not in st.session_state:
-        db_manager = DatabaseManager()
+        if db_manager is None:
+            db_manager = DatabaseManager()
         st.session_state.auth_manager = AuthManager(db_manager)
     
     return st.session_state.auth_manager

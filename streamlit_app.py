@@ -20,6 +20,65 @@ from data_preprocessing import DataPreprocessor
 from model import XGBoostSkinAllergyModel
 from auth_manager import init_auth, get_user_context
 from database_manager import DatabaseManager
+from image_model import SkinDiseaseClassifier
+
+# Configure page
+st.set_page_config(
+    page_title="Skin Allergy Risk Prediction",
+    page_icon="🧴",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Initialize components
+db = DatabaseManager()
+auth = init_auth(db)  # Pass the same db instance
+
+# Cache the model loading
+@st.cache_resource
+def load_model_and_preprocessor():
+    """Load the trained model and preprocessor"""
+    try:
+        model = XGBoostSkinAllergyModel()
+        model.load_model()
+        
+        preprocessor = DataPreprocessor()
+        preprocessor.load_preprocessor()
+        
+        return model, preprocessor
+    except Exception as e:
+        st.error(f"❌ Error loading XGBoost model: {str(e)}")
+        return None, None
+
+@st.cache_resource
+def load_image_classifier():
+    """Load the image classification model"""
+    try:
+        classifier = SkinDiseaseClassifier()
+        if classifier.load_model():
+            return classifier
+        else:
+            st.warning("⚠️ Image classification model could not be loaded. Image analysis will not be available.")
+            return None
+    except Exception as e:
+        st.warning(f"⚠️ Error loading image model: {str(e)}. Image analysis will not be available.")
+        return None
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import json
+from datetime import datetime
+import logging
+import os
+
+# Import project modules
+import config
+from data_preprocessing import DataPreprocessor
+from model import XGBoostSkinAllergyModel
+from auth_manager import init_auth, get_user_context
+from database_manager import DatabaseManager
+from image_model import SkinDiseaseClassifier
 
 # Configure page
 st.set_page_config(
@@ -545,39 +604,43 @@ def show_authenticated_app():
     """Main application interface for authenticated users"""
     user = auth.get_current_user()
     
-    # Sidebar navigation
+    # Sidebar user profile
     auth.user_profile_sidebar()
     
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### 🧭 Navigation")
-        
-        page = st.selectbox(
-            "Choose a page:",
-            [
-                "🔬 New Prediction",
-                "📊 My History", 
-                "📈 Analytics",
-                "⚙️ Settings"
-            ]
-        )
+    # Main content area with tabs
+    st.markdown('<h1 class="main-header">🧴 Skin Allergy Risk Prediction System</h1>', unsafe_allow_html=True)
+    st.markdown(f"### Welcome back, **{user['full_name']}**! 👋")
     
-    # Main content area
-    if "🔬 New Prediction" in page:
+    # Create tabs in main area
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🔬 Risk Assessment",
+        "📷 Image Analysis",
+        "📊 My History", 
+        "📈 Analytics",
+        "⚙️ Settings"
+    ])
+    
+    with tab1:
         show_prediction_page(user)
-    elif "📊 My History" in page:
+    
+    with tab2:
+        show_image_analysis_page(user)
+    
+    with tab3:
         show_history_page(user)
-    elif "📈 Analytics" in page:
+    
+    with tab4:
         show_analytics_page(user)
-    elif "⚙️ Settings" in page:
+    
+    with tab5:
         show_settings_page(user)
+    
+    # Combined report download section
+    st.markdown("---")
+    show_combined_report_section(user)
 
 def show_prediction_page(user):
     """Show the main prediction interface"""
-    st.markdown('<h1 class="main-header">🔬 Skin Allergy Risk Assessment</h1>', unsafe_allow_html=True)
-    
-    # Welcome message
-    st.markdown(f"### Welcome back, **{user['full_name']}**! 👋")
     st.markdown("Fill out the form below to get your personalized skin allergy risk assessment.")
     
     # Prediction form
@@ -624,61 +687,84 @@ def show_prediction_page(user):
 
 def show_history_page(user):
     """Show user's prediction history"""
-    st.markdown('<h1 class="main-header">📊 My Prediction History</h1>', unsafe_allow_html=True)
     
-    # Get user predictions
-    predictions = db.get_user_predictions(user['id'], limit=50)
-    
-    if not predictions:
-        st.info("🔍 No predictions found. Make your first prediction to see results here!")
-        if st.button("🔬 Make Your First Prediction"):
-            st.session_state.page = "🔬 New Prediction"
-            st.rerun()
-        return
-    
-    # Statistics overview
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Predictions", len(predictions))
-    with col2:
-        high_risk = sum(1 for p in predictions if p['predicted_risk_level'] == 'High')
-        st.metric("High Risk", high_risk)
-    with col3:
-        avg_confidence = np.mean([p['prediction_confidence'] for p in predictions])
-        st.metric("Avg Confidence", f"{avg_confidence:.1%}")
-    with col4:
-        latest_date = max(p['prediction_timestamp'] for p in predictions)
-        st.metric("Latest", latest_date[:10])
-    
-    # Display predictions
-    st.markdown(f"### 📋 Recent Predictions")
-    
-    for pred in predictions[:10]:  # Show last 10 predictions
-        with st.expander(f"{pred['prediction_timestamp'][:19]} - {pred['predicted_risk_level']} Risk"):
-            col1, col2 = st.columns(2)
+    try:
+        # Get user predictions
+        predictions = db.get_user_predictions(user['id'], limit=50)
+        
+        if not predictions:
+            st.info("🔍 No predictions found. Make your first prediction to see results here!")
+            return
+        
+        # Statistics overview
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Predictions", len(predictions))
+        with col2:
+            high_risk = sum(1 for p in predictions if p.get('predicted_risk_level') == 'High')
+            st.metric("High Risk", high_risk)
+        with col3:
+            confidences = [p.get('prediction_confidence', 0) for p in predictions if p.get('prediction_confidence') is not None]
+            if confidences:
+                avg_confidence = np.mean(confidences)
+                st.metric("Avg Confidence", f"{avg_confidence:.1%}")
+            else:
+                st.metric("Avg Confidence", "N/A")
+        with col4:
+            timestamps = [p.get('prediction_timestamp') for p in predictions if p.get('prediction_timestamp')]
+            if timestamps:
+                latest_date = max(timestamps)
+                st.metric("Latest", latest_date[:10])
+            else:
+                st.metric("Latest", "N/A")
+        
+        # Display predictions
+        st.markdown(f"### 📋 Recent Predictions ({len(predictions)} total)")
+        
+        for i, pred in enumerate(predictions[:10]):  # Show last 10 predictions
+            # Safely get values with defaults
+            timestamp = pred.get('prediction_timestamp', 'Unknown')[:19]
+            risk_level = pred.get('predicted_risk_level', 'Unknown')
             
-            with col1:
-                st.markdown(f"""
-                **Risk Level:** {pred['predicted_risk_level']}
-                **Confidence:** {pred['prediction_confidence']:.1%}
-                **Age:** {pred['age']}
-                **Skin Type:** {pred['skin_type']}
-                """)
-            
-            with col2:
-                # Create mini visualization
-                prob_data = {
-                    'Low': pred['low_risk_probability'],
-                    'Medium': pred['medium_risk_probability'], 
-                    'High': pred['high_risk_probability']
-                }
-                fig = px.bar(
-                    x=list(prob_data.keys()),
-                    y=list(prob_data.values()),
-                    title="Risk Probabilities",
-                    height=200
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            with st.expander(f"#{i+1}: {timestamp} - {risk_level} Risk"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"""
+                    **Risk Level:** {pred.get('predicted_risk_level', 'N/A')}
+                    **Confidence:** {pred.get('prediction_confidence', 0):.1%}
+                    **Age:** {pred.get('age', 'N/A')}
+                    **Skin Type:** {pred.get('skin_type', 'N/A')}
+                    **Gender:** {pred.get('gender', 'N/A')}
+                    **Season:** {pred.get('season', 'N/A')}
+                    """)
+                
+                with col2:
+                    # Create mini visualization
+                    prob_data = {
+                        'Low': pred.get('low_risk_probability', 0),
+                        'Medium': pred.get('medium_risk_probability', 0), 
+                        'High': pred.get('high_risk_probability', 0)
+                    }
+                    
+                    if any(prob_data.values()):
+                        fig = px.bar(
+                            x=list(prob_data.keys()),
+                            y=list(prob_data.values()),
+                            title="Risk Probabilities",
+                            height=200,
+                            color=list(prob_data.keys()),
+                            color_discrete_map={'High': '#f44336', 'Medium': '#ff9800', 'Low': '#4caf50'}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No probability data available")
+    
+    except Exception as e:
+        st.error(f"❌ Error loading history: {str(e)}")
+        st.error(f"Error type: {type(e).__name__}")
+        import traceback
+        st.code(traceback.format_exc())
 
 def show_analytics_page(user):
     """Show analytics and trends"""
@@ -709,9 +795,11 @@ def show_analytics_page(user):
         title='Risk Level Over Time',
         labels={'risk_numeric': 'Risk Level', 'prediction_timestamp': 'Date'}
     )
-    fig.update_yaxis(
-        tickvals=[1, 2, 3],
-        ticktext=['Low', 'Medium', 'High']
+    fig.update_layout(
+        yaxis=dict(
+            tickvals=[1, 2, 3],
+            ticktext=['Low', 'Medium', 'High']
+        )
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -774,6 +862,275 @@ def show_settings_page(user):
             with col3:
                 high_risk = stats.get('risk_distribution', {}).get('High', 0)
                 st.metric("High Risk Predictions", high_risk)
+
+def show_image_analysis_page(user):
+    """Show image analysis interface for skin disease classification"""
+    
+    st.markdown("### 📷 Skin Condition Image Analysis")
+    st.markdown("Upload a clear photo of the skin condition for AI-powered disease classification.")
+    
+    # Load image classifier
+    classifier = load_image_classifier()
+    
+    if classifier is None:
+        st.error("❌ Image classification model is not available. Please check the model file.")
+        return
+    
+    # File uploader
+    uploaded_file = st.file_uploader(
+        "Choose an image file",
+        type=['jpg', 'jpeg', 'png', 'bmp'],
+        help="Upload a clear, well-lit photo of the skin condition"
+    )
+    
+    if uploaded_file is not None:
+        # Display the uploaded image
+        from PIL import Image
+        image = Image.open(uploaded_file)
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.markdown("#### 📸 Uploaded Image")
+            st.image(image, caption="Uploaded Image", use_container_width=True)
+        
+        with col2:
+            with st.spinner("🧠 Analyzing image..."):
+                # Make prediction
+                results = classifier.predict(image)
+                
+                if results:
+                    st.markdown("#### 🎯 Analysis Results")
+                    
+                    # Main prediction
+                    st.success(f"**Predicted Condition:** {results['predicted_class']}")
+                    st.info(f"**Confidence:** {results['confidence']:.1%}")
+                    
+                    # Top 3 predictions
+                    st.markdown("##### Top 3 Predictions:")
+                    for i, pred in enumerate(results['top_predictions']):
+                        st.write(f"{i+1}. **{pred['class']}** - {pred['probability']:.1%}")
+                    
+                    # Visualization
+                    st.markdown("##### 📊 Confidence Distribution")
+                    top_5_classes = sorted(results['all_probabilities'].items(), 
+                                         key=lambda x: x[1], reverse=True)[:5]
+                    
+                    classes, probs = zip(*top_5_classes)
+                    fig = px.bar(
+                        x=list(classes),
+                        y=list(probs),
+                        title="Top 5 Predictions",
+                        labels={'x': 'Condition', 'y': 'Probability'},
+                        color=list(probs),
+                        color_continuous_scale='viridis'
+                    )
+                    fig.update_layout(xaxis_tickangle=45)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Save to session state for combined report
+                    st.session_state['image_analysis'] = {
+                        'predicted_class': results['predicted_class'],
+                        'confidence': results['confidence'],
+                        'top_predictions': results['top_predictions'],
+                        'timestamp': datetime.now().isoformat(),
+                        'filename': uploaded_file.name
+                    }
+                    
+                    # Option to save to database
+                    if st.button("💾 Save Image Analysis", type="secondary"):
+                        try:
+                            # Save image analysis to database
+                            analysis_data = {
+                                'user_id': user['id'],
+                                'image_filename': uploaded_file.name,
+                                'predicted_class': results['predicted_class'],
+                                'confidence': results['confidence'],
+                                'top_predictions': json.dumps(results['top_predictions']),
+                                'analysis_timestamp': datetime.now().isoformat()
+                            }
+                            
+                            # You could add an image_analyses table to store these
+                            st.success("✅ Image analysis saved!")
+                            
+                        except Exception as e:
+                            st.error(f"Error saving analysis: {str(e)}")
+                else:
+                    st.error("❌ Failed to analyze the image. Please try with a different image.")
+    
+    # Information section
+    st.markdown("---")
+    st.markdown("#### ℹ️ Important Notes")
+    st.info("""
+    **Medical Disclaimer:** This image analysis is for educational purposes only and should not be used 
+    as a substitute for professional medical diagnosis. Always consult with a qualified healthcare 
+    provider for proper medical evaluation and treatment.
+    
+    **Best Results:** Upload clear, well-lit photos with the skin condition clearly visible.
+    """)
+
+def show_combined_report_section(user):
+    """Show combined report download options"""
+    
+    st.markdown("### 📋 Generate Combined Analysis Report")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("""
+        Generate a comprehensive report combining all your available analyses:
+        - **Risk Assessment** results (if completed)
+        - **Image Analysis** results (if completed)
+        - **Historical trends** and patterns
+        """)
+    
+    with col2:
+        if st.button("📄 Generate PDF Report", type="primary"):
+            generate_combined_report(user, format='pdf')
+        
+        if st.button("📊 Download JSON Data", type="secondary"):
+            generate_combined_report(user, format='json')
+
+def generate_combined_report(user, format='pdf'):
+    """Generate combined analysis report"""
+    
+    with st.spinner(f"Generating {format.upper()} report..."):
+        try:
+            # Collect available data
+            report_data = {
+                'user_info': {
+                    'name': user['full_name'],
+                    'username': user['username'],
+                    'report_generated': datetime.now().isoformat()
+                },
+                'risk_assessment': None,
+                'image_analysis': None,
+                'history_summary': None
+            }
+            
+            # Get recent risk assessment if available
+            recent_predictions = db.get_user_predictions(user['id'], limit=1)
+            if recent_predictions:
+                latest = recent_predictions[0]
+                report_data['risk_assessment'] = {
+                    'predicted_risk_level': latest.get('predicted_risk_level'),
+                    'confidence': latest.get('prediction_confidence'),
+                    'timestamp': latest.get('prediction_timestamp'),
+                    'key_factors': {
+                        'age': latest.get('age'),
+                        'skin_type': latest.get('skin_type'),
+                        'season': latest.get('season'),
+                        'stress_level': latest.get('stress_level')
+                    }
+                }
+            
+            # Get image analysis from session state if available
+            if 'image_analysis' in st.session_state:
+                report_data['image_analysis'] = st.session_state['image_analysis']
+            
+            # Get history summary
+            all_predictions = db.get_user_predictions(user['id'], limit=50)
+            if all_predictions:
+                report_data['history_summary'] = {
+                    'total_predictions': len(all_predictions),
+                    'risk_distribution': {
+                        'high': sum(1 for p in all_predictions if p.get('predicted_risk_level') == 'High'),
+                        'medium': sum(1 for p in all_predictions if p.get('predicted_risk_level') == 'Medium'),
+                        'low': sum(1 for p in all_predictions if p.get('predicted_risk_level') == 'Low')
+                    },
+                    'date_range': {
+                        'first': min(p.get('prediction_timestamp', '') for p in all_predictions),
+                        'latest': max(p.get('prediction_timestamp', '') for p in all_predictions)
+                    }
+                }
+            
+            if format == 'json':
+                # JSON download
+                report_json = json.dumps(report_data, indent=2)
+                st.download_button(
+                    "📥 Download JSON Report",
+                    data=report_json,
+                    file_name=f"skin_analysis_report_{user['username']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+            
+            elif format == 'pdf':
+                # For PDF, we'll create a formatted text report for now
+                # In production, you could use libraries like reportlab for proper PDF generation
+                
+                report_text = f"""
+SKIN ALLERGY ANALYSIS REPORT
+============================
+
+Patient: {user['full_name']} ({user['username']})
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+"""
+                
+                if report_data['risk_assessment']:
+                    ra = report_data['risk_assessment']
+                    report_text += f"""
+RISK ASSESSMENT RESULTS
+-----------------------
+Risk Level: {ra['predicted_risk_level']}
+Confidence: {ra['confidence']:.1%}
+Assessment Date: {ra['timestamp'][:10]}
+
+Key Factors:
+- Age: {ra['key_factors']['age']}
+- Skin Type: {ra['key_factors']['skin_type']}
+- Season: {ra['key_factors']['season']}
+- Stress Level: {ra['key_factors']['stress_level']}
+
+"""
+                
+                if report_data['image_analysis']:
+                    ia = report_data['image_analysis']
+                    report_text += f"""
+IMAGE ANALYSIS RESULTS
+----------------------
+Predicted Condition: {ia['predicted_class']}
+Confidence: {ia['confidence']:.1%}
+Analysis Date: {ia['timestamp'][:10]}
+Image File: {ia['filename']}
+
+Top Predictions:
+"""
+                    for i, pred in enumerate(ia['top_predictions']):
+                        report_text += f"{i+1}. {pred['class']} - {pred['probability']:.1%}\n"
+                
+                if report_data['history_summary']:
+                    hs = report_data['history_summary']
+                    report_text += f"""
+HISTORY SUMMARY
+---------------
+Total Predictions: {hs['total_predictions']}
+High Risk: {hs['risk_distribution']['high']}
+Medium Risk: {hs['risk_distribution']['medium']}
+Low Risk: {hs['risk_distribution']['low']}
+Analysis Period: {hs['date_range']['first'][:10]} to {hs['date_range']['latest'][:10]}
+
+"""
+                
+                report_text += """
+MEDICAL DISCLAIMER
+------------------
+This report is for informational purposes only and should not be used as a substitute 
+for professional medical advice, diagnosis, or treatment. Always consult with a qualified 
+healthcare provider for medical concerns.
+"""
+                
+                st.download_button(
+                    "📥 Download PDF Report (Text Format)",
+                    data=report_text,
+                    file_name=f"skin_analysis_report_{user['username']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain"
+                )
+            
+            st.success(f"✅ {format.upper()} report generated successfully!")
+            
+        except Exception as e:
+            st.error(f"Error generating report: {str(e)}")
 
 if __name__ == "__main__":
     main()

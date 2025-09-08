@@ -15,6 +15,11 @@ streamlit>=1.28.0
 flask>=2.3.0
 flask-cors>=4.0.0
 
+# Database libraries
+#sqlite3  # Built into Python
+#hashlib  # Built into Python
+secrets  # Built into Python
+
 # Progress bars and UI
 tqdm>=4.65.0
 
@@ -26,6 +31,10 @@ dill>=0.3.0
 jupyter>=1.0.0
 notebook>=6.5.0
 ipykernel>=6.0.0
+
+# Authentication and Security
+bcrypt>=4.0.0
+cryptography>=41.0.0
 
 # Optional: For advanced features
 # shap>=0.41.0  # For model interpretability
